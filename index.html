@@ -1,0 +1,533 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GIS path segmenter</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+        
+        /* Layout */
+        .container { display: flex; flex: 1; overflow: hidden; position: relative; }
+        .sidebar { width: 320px; background: #f8f9fa; border-right: 1px solid #ddd; display: flex; flex-direction: column; z-index: 1000; box-shadow: 2px 0 5px rgba(0,0,0,0.1); }
+        .sidebar-content { padding: 1rem; overflow-y: auto; flex: 1; }
+        .map-wrapper { flex: 1; position: relative; background: #aad3df; }
+        #map { width: 100%; height: 100%; }
+
+        /* Controls */
+        .upload-zone { border: 2px dashed #ccc; padding: 2rem 1rem; text-align: center; background: white; cursor: pointer; border-radius: 4px; transition: 0.2s; margin-bottom: 1rem; }
+        .upload-zone:hover { border-color: #2563eb; background: #eff6ff; }
+        
+        .panel { background: white; padding: 1rem; border-radius: 4px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); margin-top: 1rem; }
+        .stat-row { display: flex; justify-content: space-between; font-size: 0.85rem; color: #555; margin-bottom: 0.5rem; }
+        
+        .btn { width: 100%; padding: 0.6rem; border: none; border-radius: 4px; cursor: pointer; font-weight: 600; margin-top: 0.5rem; font-size: 0.9rem; transition: 0.2s; }
+        .btn-primary { background: #2563eb; color: white; }
+        .btn-primary:hover { background: #1d4ed8; }
+        .btn-danger { background: #dc2626; color: white; }
+        .btn-secondary { background: #4b5563; color: white; }
+
+        /* Timeline Controls */
+        .timeline-container {
+            position: absolute; bottom: 30px; left: 340px; right: 20px;
+            background: rgba(255, 255, 255, 0.95); padding: 15px 20px;
+            border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            z-index: 999; display: none; flex-direction: column; gap: 10px;
+        }
+
+        .timeline-inputs { display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px; }
+        .date-input { border: 1px solid #ccc; padding: 4px 8px; border-radius: 4px; font-family: inherit; font-size: 0.9rem; color: #374151; }
+
+        /* Slider CSS */
+        .slider-wrapper { display: grid; grid-template-rows: max-content 1em; margin: 0 10px; position: relative; height: 30px; align-items: center; }
+        .slider-track { grid-column: 1; grid-row: 2; background: #e5e7eb; height: 6px; border-radius: 3px; width: 100%; position: relative; }
+        .slider-range-highlight { position: absolute; height: 100%; background: #3b82f6; opacity: 0.5; pointer-events: none; }
+        
+        input[type=range] { 
+            grid-column: 1; grid-row: 2; 
+            -webkit-appearance: none; appearance: none; 
+            background: transparent; pointer-events: none; 
+            z-index: 2; margin: 0; width: 100%; position: absolute; 
+        }
+        input[type=range]::-webkit-slider-thumb { 
+            -webkit-appearance: none; appearance: none;
+            height: 18px; width: 18px; border-radius: 50%; background: #2563eb; 
+            cursor: pointer; pointer-events: auto; border: 2px solid white; 
+            box-shadow: 0 1px 3px rgba(0,0,0,0.3); margin-top: -6px; 
+        }
+        input[type=range]::-moz-range-thumb {
+            height: 18px; width: 18px; border-radius: 50%; background: #2563eb; 
+            cursor: pointer; pointer-events: auto; border: 2px solid white; 
+            box-shadow: 0 1px 3px rgba(0,0,0,0.3);
+        }
+
+        /* Arrow Icons */
+        .arrow-icon { width: 20px !important; height: 20px !important; margin-left: -10px !important; margin-top: -10px !important; }
+        .arrow-svg { width: 100%; height: 100%; display: block; filter: drop-shadow(0px 1px 1px rgba(0,0,0,0.5)); }
+
+        /* Selection Box */
+        .selection-box { position: absolute; border: 2px solid rgba(37, 99, 235, 0.8); background-color: rgba(37, 99, 235, 0.2); display: none; pointer-events: none; z-index: 2000; }
+        .banner { position: absolute; top: 10px; left: 50%; transform: translateX(-50%); background: #2563eb; color: white; padding: 0.5rem 1rem; border-radius: 20px; font-size: 0.9rem; font-weight: 500; box-shadow: 0 2px 10px rgba(0,0,0,0.2); display: none; z-index: 3000; pointer-events: none; }
+        .banner.active { display: block; }
+        
+        /* Popup Styling */
+        .leaflet-popup-content { font-size: 13px; line-height: 1.4; max-height: 200px; overflow-y: auto; }
+        .popup-table { width: 100%; border-collapse: collapse; }
+        .popup-table td { padding: 3px 6px; border-bottom: 1px solid #eee; }
+        .popup-table td:first-child { font-weight: 600; color: #666; width: 40%; }
+        
+        input[type="file"] { display: none; }
+    </style>
+</head>
+<body>
+
+    <div id="selectionBanner" class="banner">
+        Selection Mode: Drag or Click to Select (Popups Disabled)
+    </div>
+
+    <div class="container">
+        <div class="sidebar">
+            <div class="sidebar-content">
+                <h2 style="font-size: 1.2rem; margin-bottom: 0.5rem;">Path Segmenter Tool</h2>
+                
+                <label class="upload-zone">
+                    <input type="file" id="fileInput" accept=".csv,.json,.geojson">
+                    <div>📂 Upload CSV/GeoJSON</div>
+                </label>
+
+                <div id="controls" style="display: none;">
+                    <div class="panel">
+                        <div class="stat-row"><span>Total Points:</span> <span id="totalPoints">0</span></div>
+                        <div class="stat-row"><span>Visible:</span> <span id="visiblePoints">0</span></div>
+                        <div class="stat-row"><span>Selected:</span> <span id="selectedCount" style="color:#d97706; font-weight:bold">0</span></div>
+                        
+                        <div id="selectionActions" style="display:none; margin-top: 10px; padding-top: 10px; border-top: 1px solid #eee;">
+                            <button class="btn btn-primary" onclick="saveSegment()">💾 Save Selection</button>
+                            <button class="btn btn-secondary" onclick="clearSelection()">❌ Clear</button>
+                        </div>
+                        
+                        <button id="toggleSelectBtn" class="btn btn-primary" onclick="toggleSelectionMode()">
+                            Enable Selection Mode
+                        </button>
+                    </div>
+
+                    <div id="segmentList" style="margin-top: 1.5rem;"></div>
+                </div>
+            </div>
+        </div>
+        
+        <div class="map-wrapper">
+            <div id="map"></div>
+            <div id="dragBox" class="selection-box"></div>
+            
+            <div id="timeline" class="timeline-container">
+                <div class="timeline-inputs">
+                    <input type="date" id="dateStart" class="date-input">
+                    <span style="font-size: 0.9rem; color: #666">to</span>
+                    <input type="date" id="dateEnd" class="date-input">
+                </div>
+                <div class="slider-wrapper">
+                    <div class="slider-track">
+                        <div id="sliderHighlight" class="slider-range-highlight" style="left: 0%; width: 100%"></div>
+                    </div>
+                    <input type="range" id="rangeMin" min="0" max="1000" value="0">
+                    <input type="range" id="rangeMax" min="0" max="1000" value="1000">
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // --- STATE ---
+        const state = {
+            data: [],           
+            selection: new Set(),
+            segments: [],
+            isSelecting: false,
+            isDragging: false,
+            dragStart: null,
+            dragCurrent: null,
+            timeRange: { min: 0, max: 0 },
+            csvHeaders: [],
+            hasFitBounds: false
+        };
+
+        // --- MAP SETUP ---
+        const map = L.map('map', { 
+            worldCopyJump: false, 
+            renderer: L.canvas()
+        }).setView([0, 180], 3);
+
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: '© OpenStreetMap',
+            noWrap: false
+        }).addTo(map);
+
+        const trackLayer = L.layerGroup().addTo(map);
+        const arrowLayer = L.layerGroup().addTo(map);
+        const pointsLayer = L.layerGroup().addTo(map);
+        const segmentsLayer = L.layerGroup().addTo(map);
+
+        // --- FILE PARSING ---
+        document.getElementById('fileInput').addEventListener('change', async (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+            const text = await file.text();
+            
+            try {
+                let rawPoints = file.name.toLowerCase().endsWith('csv') ? parseCSV(text) : parseGeoJSON(text);
+                if (!rawPoints.length) throw new Error("No points found");
+                
+                processData(rawPoints);
+                initializeTimeline();
+                renderMap();
+                
+                document.getElementById('controls').style.display = 'block';
+                document.getElementById('timeline').style.display = 'flex';
+                document.getElementById('totalPoints').innerText = state.data.length;
+            } catch (err) {
+                alert(err.message);
+            }
+        });
+
+        function parseCSV(text) {
+            const lines = text.split('\n').filter(l => l.trim());
+            if (lines.length < 2) return [];
+            const headers = lines[0].split(',').map(h => h.trim().replace(/^"|"$/g, ''));
+            state.csvHeaders = headers;
+
+            const lowH = headers.map(h => h.toLowerCase());
+            const latIdx = lowH.findIndex(h => h.includes('lat'));
+            const lonIdx = lowH.findIndex(h => h.includes('lon'));
+            const courseIdx = lowH.findIndex(h => h.includes('course') || h.includes('cog') || h.includes('heading'));
+            const timeIdx = lowH.findIndex(h => h.includes('time') || h.includes('date'));
+
+            return lines.slice(1).map(line => {
+                const row = line.split(',');
+                const lat = parseFloat(row[latIdx]);
+                const lon = parseFloat(row[lonIdx]);
+                const course = courseIdx >= 0 ? parseFloat(row[courseIdx]) : null;
+
+                if (isNaN(lat) || isNaN(lon)) return null;
+
+                const props = {};
+                headers.forEach((h, i) => props[h] = row[i] ? row[i].replace(/^"|"$/g, '') : '');
+                
+                return { lat, lon, course, timestampStr: timeIdx >= 0 ? props[headers[timeIdx]] : null, rawData: props };
+            }).filter(p => p);
+        }
+
+        function parseGeoJSON(text) {
+            const json = JSON.parse(text);
+            const features = json.features || (json.type === 'FeatureCollection' ? json.features : []);
+            state.csvHeaders = ['latitude', 'longitude', 'timestamp']; 
+            
+            return features.flatMap(f => {
+                if(f.geometry.type === 'Point') {
+                    const [lon, lat] = f.geometry.coordinates;
+                    return [{
+                        lat, lon, 
+                        course: f.properties.course || f.properties.cog || 0,
+                        timestampStr: f.properties.timestamp,
+                        rawData: f.properties
+                    }];
+                }
+                return [];
+            });
+        }
+
+        function processData(points) {
+            points.forEach(p => p.ts = p.timestampStr ? new Date(p.timestampStr).getTime() : 0);
+            points.sort((a, b) => a.ts - b.ts);
+
+            // IDL Wrapping
+            let offset = 0, prevLon = points[0].lon;
+            state.data = points.map((p, i) => {
+                const diff = p.lon - prevLon;
+                if (diff < -180) offset += 360;
+                else if (diff > 180) offset -= 360;
+                prevLon = p.lon;
+                
+                return { ...p, id: i, visualLon: p.lon + offset, visible: true };
+            });
+
+            // Set Time Range
+            const times = state.data.map(p => p.ts).filter(t => t > 0);
+            if (times.length) {
+                state.timeRange.min = Math.min(...times);
+                state.timeRange.max = Math.max(...times);
+            }
+        }
+
+        // --- RENDERER ---
+        function renderMap() {
+            trackLayer.clearLayers();
+            pointsLayer.clearLayers();
+            arrowLayer.clearLayers();
+
+            const visible = state.data.filter(p => p.visible);
+            document.getElementById('visiblePoints').innerText = visible.length;
+            if (!visible.length) return;
+
+            const latLngs = visible.map(p => [p.lat, p.visualLon]);
+            L.polyline(latLngs, { color: '#64748b', weight: 2, opacity: 0.6 }).addTo(trackLayer);
+
+            const arrowStep = Math.max(1, Math.floor(visible.length / 50)); 
+            
+            visible.forEach((p, idx) => {
+                // Arrows
+                if (idx % arrowStep === 0 && idx < visible.length - 1) {
+                    let rotation = p.course;
+                    if (rotation == null || isNaN(rotation)) {
+                        const next = visible[idx + 1];
+                        rotation = calculateBearing(p.lat, p.visualLon, next.lat, next.visualLon);
+                    }
+                    const arrowIcon = L.divIcon({
+                        className: 'arrow-icon',
+                        html: `<svg class="arrow-svg" style="transform: rotate(${rotation}deg);" viewBox="0 0 24 24">
+                                <path fill="#2563eb" stroke="white" stroke-width="2" d="M12 2L4.5 20.29l.71.71L12 18l6.79 3 .71-.71z"/>
+                               </svg>`
+                    });
+                    L.marker([p.lat, p.visualLon], { icon: arrowIcon, interactive: false }).addTo(arrowLayer);
+                }
+
+                // Points
+                const marker = L.circleMarker([p.lat, p.visualLon], {
+                    radius: 3,
+                    color: 'transparent',
+                    fillColor: state.selection.has(p.id) ? '#d97706' : '#2563eb',
+                    fillOpacity: 0.8,
+                    interactive: true
+                });
+                
+                marker.pointId = p.id;
+                
+                // Bind Popup (only opens if not selecting)
+                marker.bindPopup(generatePopupContent(p), { maxWidth: 300 });
+
+                marker.on('click', (e) => {
+                    if (state.isSelecting) {
+                        e.target.closePopup();
+                        togglePointSelection(p.id); // Default toggle behavior on click
+                    }
+                });
+
+                marker.addTo(pointsLayer);
+            });
+
+            if (!state.hasFitBounds) {
+                map.fitBounds(L.latLngBounds(latLngs));
+                state.hasFitBounds = true;
+            }
+        }
+
+        function calculateBearing(lat1, lon1, lat2, lon2) {
+            const toRad = x => x * Math.PI / 180;
+            const toDeg = x => x * 180 / Math.PI;
+            const dLon = toRad(lon2 - lon1);
+            const y = Math.sin(dLon) * Math.cos(toRad(lat2));
+            const x = Math.cos(toRad(lat1)) * Math.sin(toRad(lat2)) - Math.sin(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.cos(dLon);
+            return (toDeg(Math.atan2(y, x)) + 360) % 360;
+        }
+
+        function generatePopupContent(point) {
+            let rows = '';
+            for (const [key, val] of Object.entries(point.rawData)) {
+                rows += `<tr><td>${key}</td><td>${val}</td></tr>`;
+            }
+            return `<div style="font-weight:bold; margin-bottom:5px; border-bottom:1px solid #ddd; padding-bottom:5px;">Point Details</div>
+                    <table class="popup-table">${rows}</table>`;
+        }
+
+        // --- TIMELINE LOGIC ---
+        function initializeTimeline() {
+            const minEl = document.getElementById('rangeMin');
+            const maxEl = document.getElementById('rangeMax');
+            const dateStart = document.getElementById('dateStart');
+            const dateEnd = document.getElementById('dateEnd');
+            const highlight = document.getElementById('sliderHighlight');
+            const toDateStr = (ts) => new Date(ts).toISOString().split('T')[0];
+            const toTs = (dateStr) => new Date(dateStr).getTime();
+            const minTs = state.timeRange.min;
+            const maxTs = state.timeRange.max;
+            
+            dateStart.min = dateEnd.min = toDateStr(minTs);
+            dateStart.max = dateEnd.max = toDateStr(maxTs);
+            dateStart.value = toDateStr(minTs);
+            dateEnd.value = toDateStr(maxTs);
+
+            function updateFromSlider() {
+                const minVal = parseInt(minEl.value);
+                const maxVal = parseInt(maxEl.value);
+                if (minVal > maxVal) {
+                    if (document.activeElement === minEl) minEl.value = maxVal; else maxEl.value = minVal;
+                }
+                const range = maxTs - minTs;
+                const currentMinTs = minTs + (Math.min(minVal, maxVal) / 1000 * range);
+                const currentMaxTs = minTs + (Math.max(minVal, maxVal) / 1000 * range);
+                dateStart.value = toDateStr(currentMinTs);
+                dateEnd.value = toDateStr(currentMaxTs);
+                updateVisualsAndFilter(currentMinTs, currentMaxTs);
+            }
+
+            function updateFromDateInput() {
+                const currentMinTs = toTs(dateStart.value);
+                const currentMaxTs = toTs(dateEnd.value);
+                if (isNaN(currentMinTs) || isNaN(currentMaxTs)) return;
+                const range = maxTs - minTs;
+                minEl.value = Math.max(0, (currentMinTs - minTs) / range) * 1000;
+                maxEl.value = Math.min(1, (currentMaxTs - minTs) / range) * 1000;
+                updateVisualsAndFilter(currentMinTs, currentMaxTs + 86400000);
+            }
+
+            function updateVisualsAndFilter(startTs, endTs) {
+                const minV = parseInt(minEl.value);
+                const maxV = parseInt(maxEl.value);
+                highlight.style.left = Math.min(minV, maxV) / 10 + '%';
+                highlight.style.width = Math.abs(maxV - minV) / 10 + '%';
+                state.data.forEach(p => p.visible = (p.ts >= startTs && p.ts <= endTs));
+                if (window.renderTimeout) clearTimeout(window.renderTimeout);
+                window.renderTimeout = setTimeout(renderMap, 50);
+            }
+            minEl.addEventListener('input', updateFromSlider);
+            maxEl.addEventListener('input', updateFromSlider);
+            dateStart.addEventListener('change', updateFromDateInput);
+            dateEnd.addEventListener('change', updateFromDateInput);
+        }
+
+        // --- SELECTION & DRAG (FIXED) ---
+        function toggleSelectionMode() {
+            state.isSelecting = !state.isSelecting;
+            const btn = document.getElementById('toggleSelectBtn');
+            const banner = document.getElementById('selectionBanner');
+            
+            if (state.isSelecting) {
+                map.closePopup();
+                map.dragging.disable();
+                map.getContainer().style.cursor = 'crosshair';
+                btn.innerText = "Exit Selection Mode";
+                btn.classList.replace('btn-primary', 'btn-secondary');
+                banner.classList.add('active');
+                document.getElementById('selectionActions').style.display = 'block';
+            } else {
+                map.dragging.enable();
+                map.getContainer().style.cursor = '';
+                btn.innerText = "Enable Selection Mode";
+                btn.classList.replace('btn-secondary', 'btn-primary');
+                banner.classList.remove('active');
+            }
+        }
+
+        // FIXED: Added forceState parameter so Box Selection works again
+        function togglePointSelection(id, forceState = null) {
+            const isSelected = state.selection.has(id);
+            const shouldSelect = forceState !== null ? forceState : !isSelected;
+            
+            if (shouldSelect) state.selection.add(id);
+            else state.selection.delete(id);
+            
+            // Fast visual update
+            pointsLayer.eachLayer(l => {
+                if (l.pointId === id) {
+                    l.setStyle({ 
+                        fillColor: state.selection.has(id) ? '#d97706' : '#2563eb',
+                        radius: state.selection.has(id) ? 5 : 3
+                    });
+                }
+            });
+            document.getElementById('selectedCount').innerText = state.selection.size;
+        }
+
+        function clearSelection() {
+            state.selection.clear();
+            renderMap();
+            document.getElementById('selectedCount').innerText = 0;
+        }
+
+        const dragBox = document.getElementById('dragBox');
+        const mapContainer = map.getContainer();
+
+        mapContainer.addEventListener('mousedown', (e) => {
+            if (!state.isSelecting || e.target.closest('.leaflet-control') || e.target.closest('.timeline-container')) return;
+            state.isDragging = true;
+            const rect = mapContainer.getBoundingClientRect();
+            state.dragStart = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+            dragBox.style.display = 'block';
+        });
+
+        window.addEventListener('mousemove', (e) => {
+            if (!state.isDragging) return;
+            const rect = mapContainer.getBoundingClientRect();
+            const currX = e.clientX - rect.left;
+            const currY = e.clientY - rect.top;
+            const minX = Math.min(state.dragStart.x, currX), maxX = Math.max(state.dragStart.x, currX);
+            const minY = Math.min(state.dragStart.y, currY), maxY = Math.max(state.dragStart.y, currY);
+            
+            dragBox.style.left = minX + 'px'; dragBox.style.top = minY + 'px';
+            dragBox.style.width = (maxX - minX) + 'px'; dragBox.style.height = (maxY - minY) + 'px';
+            state.dragCurrent = { minX, maxX, minY, maxY };
+        });
+
+        window.addEventListener('mouseup', () => {
+            if (!state.isDragging) return;
+            state.isDragging = false;
+            dragBox.style.display = 'none';
+            
+            if (state.dragCurrent) {
+                const box = state.dragCurrent;
+                pointsLayer.eachLayer(layer => {
+                    const pt = map.latLngToContainerPoint(layer.getLatLng());
+                    if (pt.x >= box.minX && pt.x <= box.maxX && pt.y >= box.minY && pt.y <= box.maxY) {
+                        // FIXED: Added 'true' to force selection (additive), rather than toggle
+                        togglePointSelection(layer.pointId, true);
+                    }
+                });
+            }
+            state.dragCurrent = null;
+        });
+
+        function saveSegment() {
+            if (state.selection.size === 0) return alert("No points selected");
+            const selectedPoints = Array.from(state.selection).sort((a, b) => a - b).map(id => state.data[id]);
+            const segmentId = Date.now();
+            const latLngs = selectedPoints.map(p => [p.lat, p.visualLon]);
+            const poly = L.polyline(latLngs, { color: '#f59e0b', weight: 4 }).addTo(segmentsLayer);
+            state.segments.push({ id: segmentId, points: selectedPoints, layer: poly });
+
+            const div = document.createElement('div');
+            div.className = 'segment-item';
+            div.innerHTML = `<div><strong>Seg ${state.segments.length}</strong> (${selectedPoints.length} pts)</div>
+                             <div class="segment-actions">
+                                <button class="btn btn-primary" onclick="downloadCSV(${segmentId})">CSV</button>
+                                <button class="btn btn-danger" onclick="deleteSegment(${segmentId})">Del</button>
+                             </div>`;
+            document.getElementById('segmentList').appendChild(div);
+            clearSelection();
+        }
+
+        function downloadCSV(id) {
+            const seg = state.segments.find(s => s.id === id);
+            const headers = state.csvHeaders;
+            let csv = headers.join(',') + '\n';
+            seg.points.forEach(p => {
+                csv += headers.map(h => `"${(p.rawData[h] || '').toString().replace(/"/g, '""')}"`).join(',') + '\n';
+            });
+            const link = document.createElement('a');
+            link.href = URL.createObjectURL(new Blob([csv], {type: 'text/csv'}));
+            link.download = `segment_${id}.csv`;
+            link.click();
+        }
+
+        function deleteSegment(id) {
+            const idx = state.segments.findIndex(s => s.id === id);
+            if (idx === -1) return;
+            map.removeLayer(state.segments[idx].layer);
+            state.segments.splice(idx, 1);
+            document.getElementById('segmentList').children[idx].remove();
+        }
+    </script>
+</body>
+</html>
